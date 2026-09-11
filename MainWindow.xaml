@@ -1,0 +1,278 @@
+﻿<Window x:Class="LedPlayer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
+        Title="LED Player — пульт управления"
+        Width="1100" Height="640"
+        MinWidth="900" MinHeight="540"
+        WindowStartupLocation="CenterScreen"
+        Background="#1B1B28">
+
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#34344E"/>
+            <Setter Property="Foreground" Value="#E8E8F0"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg" Background="{TemplateBinding Background}"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#4C4C72"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="MenuButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="#E8E8F0"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg" Background="Transparent"
+                                CornerRadius="6" Padding="10,6">
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#4C4C72"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ScaleRadioStyle" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#9A9AB0"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bg" Background="Transparent"
+                                CornerRadius="6" Padding="14,5"
+                                BorderBrush="#3A3A55" BorderThickness="1">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#4C6FD1"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#2B2B40"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ШАПКА -->
+        <Border Grid.Row="0" Background="#242436" Padding="14,8">
+            <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="LED PLAYER" Foreground="#8FA3FF" FontSize="16"
+                               FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock Text="— пульт управления" Foreground="#5A5A78" FontSize="12"
+                               VerticalAlignment="Center" Margin="6,0,0,0"/>
+                    <Rectangle Width="1" Height="22" Fill="#3A3A55" Margin="18,0"/>
+                    <Button Content="Композиция" FontSize="13" Padding="10,5"
+                            Click="OnCompositionClick"/>
+                    <Button x:Name="BtnOutput" Content="Окно вывода" FontSize="13"
+                            Padding="10,5" Margin="6,0,0,0" Click="OnOutputClick"/>
+                    <Button Content="Настройки" FontSize="13" Padding="10,5" Margin="6,0,0,0"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                            HorizontalAlignment="Right">
+                    <Ellipse x:Name="OnAirDot" Width="10" Height="10" Fill="#5A5A78"
+                             VerticalAlignment="Center"/>
+                    <TextBlock x:Name="OnAirText" Text="ОЖИДАНИЕ" Foreground="#5A5A78"
+                               FontSize="12" FontWeight="Bold" Margin="8,0,0,0"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="ClockText" Foreground="#9A9AB0" FontSize="14"
+                               VerticalAlignment="Center" Margin="16,0,0,0"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- СЕРЕДИНА -->
+        <Grid Grid.Row="1" Margin="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="3*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ЛЕВО: превью + управление -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Background="Black" CornerRadius="8" Padding="4">
+                    <Grid x:Name="PreviewHost">
+                        <vlc:VideoView x:Name="VideoView"/>
+                        <TextBlock x:Name="IdleText" Text="Нет сигнала"
+                                   Foreground="#777788" FontSize="24"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Grid>
+                </Border>
+
+                <StackPanel Grid.Row="1" Margin="0,10,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <Button x:Name="BtnPrev" Content="◀◀" Width="52" Click="OnPrevClick"/>
+                        <Button x:Name="BtnPlayPause" Content="▶" Width="62" Margin="6,0" Click="OnPlayPauseClick"/>
+                        <Button x:Name="BtnNext" Content="▶▶" Width="52" Click="OnNextClick"/>
+                        <TextBlock Text="Громкость" Foreground="#9A9AB0"
+                                   VerticalAlignment="Center" Margin="20,0,8,0"/>
+                        <Slider x:Name="VolumeSlider" Width="140" Minimum="0" Maximum="100"
+                                VerticalAlignment="Center" ValueChanged="OnVolumeChanged"/>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBlock Text="Масштаб:" Foreground="#9A9AB0"
+                                   VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <RadioButton x:Name="RbFill" Content="FILL"
+                                     Style="{StaticResource ScaleRadioStyle}"
+                                     Checked="OnScaleFillChecked"/>
+                        <RadioButton x:Name="RbFit" Content="FIT"
+                                     Style="{StaticResource ScaleRadioStyle}" Margin="8,0,0,0"
+                                     Checked="OnScaleFitChecked"/>
+                        <RadioButton x:Name="RbStretch" Content="STRETCH"
+                                     Style="{StaticResource ScaleRadioStyle}" Margin="8,0,0,0"
+                                     Checked="OnScaleStretchChecked"/>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+
+            <!-- ПРАВО: плейлист -->
+            <Border Grid.Column="2" Background="#242436" CornerRadius="8" Padding="10">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="ПЛЕЙЛИСТ" Foreground="#9A9AB0"
+                               FontSize="13" FontWeight="Bold" Margin="2,0,0,8"/>
+
+                    <ListBox Grid.Row="1" x:Name="PlaylistBox"
+                             Background="Transparent" BorderThickness="0"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             HorizontalContentAlignment="Stretch"
+                             MouseDoubleClick="OnPlaylistDoubleClick">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Foreground" Value="#E8E8F0"/>
+                                <Setter Property="Padding" Value="4"/>
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <Border x:Name="Bg" Background="Transparent"
+                                                    CornerRadius="6"
+                                                    Padding="{TemplateBinding Padding}">
+                                                <ContentPresenter/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="Bg" Property="Background" Value="#34344E"/>
+                                                </Trigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bg" Property="Background" Value="#2B2B40"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="6,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="34"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Number}" Foreground="#8FA3FF"
+                                               FontSize="15" FontWeight="Bold"
+                                               HorizontalAlignment="Center"/>
+                                    <StackPanel Grid.Column="1" Margin="4,0,0,0">
+                                        <TextBlock Text="{Binding FileName}" FontSize="14"
+                                                   Foreground="#E8E8F0"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                            <TextBlock Text="{Binding DurationText}"
+                                                       Foreground="#9A9AB0" FontSize="12"/>
+                                            <TextBlock Text="{Binding SizeText}"
+                                                       Foreground="#9A9AB0" FontSize="12"
+                                                       Margin="12,0,0,0"/>
+                                            <TextBlock Text="{Binding PlaysText}"
+                                                       Foreground="#7FD1A8" FontSize="12"
+                                                       Margin="12,0,0,0"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <StackPanel Grid.Row="2" Margin="0,10,0,0">
+                        <Button Content="+  Добавить файлы"/>
+                        <Button Content="−  Убрать выбранный" Margin="0,6,0,0"/>
+                        <Grid Margin="0,6,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Content="↑ Вверх"/>
+                            <Button Grid.Column="1" Content="↓ Вниз" Margin="6,0,0,0"/>
+                        </Grid>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- НИЗ -->
+        <Border Grid.Row="2" Background="#242436" Padding="14,8">
+            <Grid>
+                <TextBlock x:Name="StatusText" Text="Готов"
+                           Foreground="#9A9AB0" HorizontalAlignment="Left"/>
+                <TextBlock x:Name="StatusRight" Text=""
+                           Foreground="#9A9AB0" HorizontalAlignment="Right"/>
+            </Grid>
+        </Border>
+
+        <Popup x:Name="OutputMenu" StaysOpen="False" Placement="Bottom"
+               PlacementTarget="{Binding ElementName=BtnOutput}" AllowsTransparency="True">
+            <Border Background="#2A2A40" CornerRadius="8" Padding="6"
+                    BorderBrush="#3A3A55" BorderThickness="1">
+                <StackPanel x:Name="OutputMenuPanel" MinWidth="280"/>
+            </Border>
+        </Popup>
+    </Grid>
+</Window>
