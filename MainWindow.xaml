@@ -80,6 +80,19 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Маленькие поля ввода в плейлисте -->
+        <Style x:Key="MiniBoxStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="#2A2A40"/>
+            <Setter Property="Foreground" Value="#E8E8F0"/>
+            <Setter Property="BorderBrush" Value="#3A3A55"/>
+            <Setter Property="CaretBrush" Value="#E8E8F0"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="4,2"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="TextAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
     </Window.Resources>
 
     <Grid>
@@ -213,30 +226,65 @@
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="6,5">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="34"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{Binding Number}" Foreground="#8FA3FF"
-                                               FontSize="15" FontWeight="Bold"
-                                               HorizontalAlignment="Center"/>
-                                    <StackPanel Grid.Column="1" Margin="4,0,0,0">
-                                        <TextBlock Text="{Binding FileName}" FontSize="14"
-                                                   Foreground="#E8E8F0"
-                                                   TextTrimming="CharacterEllipsis"/>
-                                        <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-                                            <TextBlock Text="{Binding DurationText}"
-                                                       Foreground="#9A9AB0" FontSize="12"/>
-                                            <TextBlock Text="{Binding SizeText}"
-                                                       Foreground="#9A9AB0" FontSize="12"
-                                                       Margin="12,0,0,0"/>
-                                            <TextBlock Text="{Binding PlaysText}"
-                                                       Foreground="#7FD1A8" FontSize="12"
-                                                       Margin="12,0,0,0"/>
+                                <Border BorderBrush="#2A2A3C" BorderThickness="0,0,0,1"
+                                        Padding="2,5,2,8">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+
+                                        <!-- Строка 1: номер, имя, статистика -->
+                                        <Grid Grid.Row="0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="34"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Number}" Foreground="#8FA3FF"
+                                                       FontSize="15" FontWeight="Bold"
+                                                       HorizontalAlignment="Center"/>
+                                            <StackPanel Grid.Column="1" Margin="4,0,0,0">
+                                                <TextBlock Text="{Binding FileName}" FontSize="14"
+                                                           Foreground="#E8E8F0"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                                    <TextBlock Text="{Binding DurationText}"
+                                                               Foreground="#9A9AB0" FontSize="12"/>
+                                                    <TextBlock Text="{Binding SizeText}"
+                                                               Foreground="#9A9AB0" FontSize="12"
+                                                               Margin="12,0,0,0"/>
+                                                    <TextBlock Text="{Binding PlaysText}"
+                                                               Foreground="#7FD1A8" FontSize="12"
+                                                               Margin="12,0,0,0"/>
+                                                    <TextBlock Text="{Binding BlockInfo}"
+                                                               Foreground="#E0A050" FontSize="12"
+                                                               Margin="12,0,0,0"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <!-- Строка 2: лимиты -->
+                                        <StackPanel Grid.Row="1" Orientation="Horizontal"
+                                                    Margin="38,6,0,0">
+                                            <TextBlock Text="Лимит/день:" Foreground="#6E6E88"
+                                                       FontSize="11" VerticalAlignment="Center"/>
+                                            <TextBox Width="44" Margin="4,0,0,0"
+                                                     Style="{StaticResource MiniBoxStyle}"
+                                                     Text="{Binding MaxPlaysText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                     ToolTip="Максимум показов в день. 0 или пусто — без ограничения"/>
+                                            <TextBlock Text="Интервал, мин:" Foreground="#6E6E88"
+                                                       FontSize="11" Margin="12,0,0,0"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBox Width="48" Margin="4,0,0,0"
+                                                     Style="{StaticResource MiniBoxStyle}"
+                                                     Text="{Binding IntervalText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                     ToolTip="Пауза между показами этого ролика. 0 или пусто — без паузы"/>
+                                            <TextBlock Text="0 = без ограничений" Foreground="#565668"
+                                                       FontSize="10" Margin="10,0,0,0"
+                                                       VerticalAlignment="Center"/>
                                         </StackPanel>
-                                    </StackPanel>
-                                </Grid>
+                                    </Grid>
+                                </Border>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>

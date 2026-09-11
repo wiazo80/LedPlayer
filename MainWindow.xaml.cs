@@ -16,8 +16,6 @@ using Forms = System.Windows.Forms;
 namespace LedPlayer
 {
     // ─── Мостик к движку VLC ──────────────────────────────
-    // Функции масштабирования есть в движке, но не в .NET-обёртке —
-    // вызываем напрямую
     internal static class VlcNative
     {
         [DllImport("libvlc", CallingConvention = CallingConvention.Cdecl)]
@@ -44,17 +42,17 @@ namespace LedPlayer
         }
     }
 
-    // ─── Настройки (сохраняются в config.json) ────────────
+    // ─── Настройки (config.json) ──────────────────────────
     public class Config
     {
         public string VideoFolder { get; set; } = @"C:\LedContent";
         public int Volume { get; set; } = 30;
         public bool Shuffle { get; set; } = false;
 
-        public int CompW { get; set; } = 1248;   // размер LED-экрана (для «Композиции»)
+        public int CompW { get; set; } = 1248;
         public int CompH { get; set; } = 576;
 
-        public string ScaleMode { get; set; } = "fill";   // "fill" | "fit" | "stretch"
+        public string ScaleMode { get; set; } = "fill";
 
         public bool OutputVisible { get; set; } = false;
         public string OutputMode { get; set; } = "custom";
@@ -66,10 +64,26 @@ namespace LedPlayer
         public bool OutputSound { get; set; } = false;
     }
 
-    // ─── Один пункт плейлиста (обновляется «на лету») ─────
+    // ─── Статистика по ролику (stats.json) ────────────────
+    public class StatEntry
+    {
+        public int Total { get; set; }
+        public Dictionary<string, int> Daily { get; set; } = new(); // "2025-01-15" → 5
+        public DateTime? LastPlayed { get; set; }
+    }
+
+    // ─── Лимиты конкретного ролика (playlistSettings.json) ─
+    public class PlaylistSettings
+    {
+        public int MaxPlaysPerDay { get; set; }
+        public int IntervalMinutes { get; set; }
+    }
+
+    // ─── Один пункт плейлиста ─────────────────────────────
     public class PlaylistItem : System.ComponentModel.INotifyPropertyChanged
     {
         public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+        public event Action? SettingsEdited;   // оператор поправил лимиты
 
         private void OnProp(string name) =>
             PropertyChanged?.Invoke(this,
@@ -83,13 +97,7 @@ namespace LedPlayer
         public long DurationMs
         {
             get => _durationMs;
-            set
-            {
-                if (_durationMs == value) return;
-                _durationMs = value;
-                OnProp(nameof(DurationMs));
-                OnProp(nameof(DurationText));
-            }
+            set { if (_durationMs == value) return; _durationMs = value; OnProp(nameof(DurationMs)); OnProp(nameof(DurationText)); }
         }
 
         private uint _videoW;
@@ -110,13 +118,71 @@ namespace LedPlayer
         public int PlayCount
         {
             get => _playCount;
+            set { if (_playCount == value) return; _playCount = value; OnProp(nameof(PlayCount)); OnProp(nameof(PlaysText)); }
+        }
+
+        private int _playsToday;
+        public int PlaysToday
+        {
+            get => _playsToday;
+            set { if (_playsToday == value) return; _playsToday = value; OnProp(nameof(PlaysToday)); OnProp(nameof(PlaysText)); }
+        }
+
+        private int _maxPlays;
+        public int MaxPlaysPerDay
+        {
+            get => _maxPlays;
+            set { if (_maxPlays == value) return; _maxPlays = value; OnProp(nameof(MaxPlaysPerDay)); OnProp(nameof(PlaysText)); }
+        }
+
+        private int _intervalMin;
+        public int IntervalMinutes
+        {
+            get => _intervalMin;
+            set { if (_intervalMin == value) return; _intervalMin = value; OnProp(nameof(IntervalMinutes)); }
+        }
+
+        // Текст в поле «Лимит/день» (пусто = 0 = без лимита)
+        public string MaxPlaysText
+        {
+            get => _maxPlays <= 0 ? "" : _maxPlays.ToString();
             set
             {
-                if (_playCount == value) return;
-                _playCount = value;
-                OnProp(nameof(PlayCount));
+                var v = ParseInt(value);
+                if (_maxPlays == v) { OnProp(nameof(MaxPlaysText)); return; }
+                _maxPlays = v;
+                OnProp(nameof(MaxPlaysText));
                 OnProp(nameof(PlaysText));
+                SettingsEdited?.Invoke();
             }
+        }
+
+        // Текст в поле «Интервал, мин» (пусто = 0 = без паузы)
+        public string IntervalText
+        {
+            get => _intervalMin <= 0 ? "" : _intervalMin.ToString();
+            set
+            {
+                var v = ParseInt(value);
+                if (v > 10080) v = 10080;   // не больше недели
+                if (_intervalMin == v) { OnProp(nameof(IntervalText)); return; }
+                _intervalMin = v;
+                OnProp(nameof(IntervalText));
+                SettingsEdited?.Invoke();
+            }
+        }
+
+        private static int ParseInt(string? s)
+        {
+            int.TryParse((s ?? "").Trim(), out var v);
+            return Math.Clamp(v, 0, 9999);
+        }
+
+        private string _blockInfo = "";
+        public string BlockInfo
+        {
+            get => _blockInfo;
+            set { if (_blockInfo == value) return; _blockInfo = value; OnProp(nameof(BlockInfo)); }
         }
 
         public string FileName => Path.GetFileName(FullPath);
@@ -135,21 +201,32 @@ namespace LedPlayer
         public string SizeText => SizeBytes > 0
             ? $"{SizeBytes / 1024.0 / 1024.0:F1} МБ" : "";
 
-        public string PlaysText => $"показов: {PlayCount}";
+        public string PlaysText
+        {
+            get
+            {
+                var today = MaxPlaysPerDay > 0
+                    ? $" · сегодня: {PlaysToday}/{MaxPlaysPerDay}"
+                    : $" · сегодня: {PlaysToday}";
+                return $"показов: {PlayCount}{today}";
+            }
+        }
     }
 
     public partial class MainWindow : Window
     {
         private LibVLC _libVlc = null!;
-        private MediaPlayer _player = null!;      // плеер предпросмотра
-        private MediaPlayer _outPlayer = null!;   // плеер окна вывода
+        private MediaPlayer _player = null!;
+        private MediaPlayer _outPlayer = null!;
         private OutputWindow? _outputWindow;
         private List<PlaylistItem> _playlist = new();
         private int _index;
         private Config _config = new();
         private FileSystemWatcher? _watcher;
-        private Dictionary<string, int> _playCounts = new();
+        private Dictionary<string, StatEntry> _stats = new();
+        private Dictionary<string, PlaylistSettings> _plSettings = new();
         private bool _isAppClosing;
+        private bool _waiting;   // все ролики заблокированы лимитами — ждём
 
         private readonly System.Windows.Threading.DispatcherTimer _resizeDebounce =
             new() { Interval = TimeSpan.FromMilliseconds(150) };
@@ -158,6 +235,8 @@ namespace LedPlayer
             { ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".mpg", ".webm" };
 
         private string StatsPath => Path.Combine(AppContext.BaseDirectory, "stats.json");
+        private string PlSettingsPath => Path.Combine(AppContext.BaseDirectory, "playlistSettings.json");
+        private static string TodayKey => DateTime.Now.ToString("yyyy-MM-dd");
         public Config Config => _config;
 
         public MainWindow()
@@ -171,6 +250,7 @@ namespace LedPlayer
         {
             LoadConfig();
             LoadStats();
+            LoadPlSettings();
             InitPlayer();
             StartWatchFolder();
             _ = ReloadPlaylistAsync();
@@ -253,13 +333,21 @@ namespace LedPlayer
             for (int i = 0; i < files.Count; i++)
             {
                 var info = new FileInfo(files[i]);
-                items.Add(new PlaylistItem
+                _stats.TryGetValue(files[i], out var se);
+                _plSettings.TryGetValue(files[i], out var st);
+
+                var it = new PlaylistItem
                 {
                     FullPath = files[i],
                     Number = i + 1,
                     SizeBytes = info.Exists ? info.Length : 0,
-                    PlayCount = _playCounts.TryGetValue(files[i], out var c) ? c : 0
-                });
+                    PlayCount = se?.Total ?? 0,
+                    PlaysToday = se?.Daily.TryGetValue(TodayKey, out var pc) == true ? pc : 0,
+                    MaxPlaysPerDay = st?.MaxPlaysPerDay ?? 0,
+                    IntervalMinutes = st?.IntervalMinutes ?? 0
+                };
+                it.SettingsEdited += () => OnItemSettingsEdited(it);
+                items.Add(it);
             }
 
             _playlist = items;
@@ -281,7 +369,7 @@ namespace LedPlayer
 
             RefreshPlaylistUi();
 
-            if (_playlist.Count > 0 && !_player.IsPlaying)
+            if (_playlist.Count > 0 && !_player.IsPlaying && !_waiting)
                 PlayCurrent();
         }
 
@@ -294,6 +382,7 @@ namespace LedPlayer
             StatusRight.Text = $"Папка: {_config.VideoFolder}  ·  Роликов: {_playlist.Count}";
 
             bool empty = _playlist.Count == 0;
+            IdleText.Text = "Нет сигнала";
             IdleText.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
             VideoView.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
         }
@@ -307,6 +396,9 @@ namespace LedPlayer
                 _index = Random.Shared.Next(_playlist.Count);
 
             var item = _playlist[_index];
+
+            VideoView.Visibility = Visibility.Visible;
+            IdleText.Visibility = Visibility.Collapsed;
 
             using var media = new Media(_libVlc, new Uri(item.FullPath));
             _player.Play(media);
@@ -322,12 +414,7 @@ namespace LedPlayer
             StatusText.Text = $"Играет: {item.FileName}";
             SetOnAir(true);
 
-            item.PlayCount++;
-            _playCounts[item.FullPath] = item.PlayCount;
-            SaveStats();
-
-            // Масштаб применим и сейчас, и подхватим через секунду,
-            // когда видео-движок прогреется (см. SyncVideoInfo)
+            RecordPlay(item);
             ApplyScaling();
         }
 
@@ -335,9 +422,160 @@ namespace LedPlayer
             ":start-time=" + seconds.ToString("F2",
                 System.Globalization.CultureInfo.InvariantCulture);
 
+        // ─── Правила показов: лимиты и интервалы ───────────
+
+        // Можно ли играть ролик сейчас?
+        private bool IsPlayable(PlaylistItem it)
+        {
+            if (!_stats.TryGetValue(it.FullPath, out var s)) return true;
+
+            // Дневной лимит исчерпан?
+            if (it.MaxPlaysPerDay > 0 &&
+                s.Daily.TryGetValue(TodayKey, out var today) &&
+                today >= it.MaxPlaysPerDay)
+                return false;
+
+            // Интервал с последнего показа ещё не прошёл?
+            if (it.IntervalMinutes > 0 && s.LastPlayed is DateTime lp &&
+                DateTime.Now - lp < TimeSpan.FromMinutes(it.IntervalMinutes))
+                return false;
+
+            return true;
+        }
+
+        // Следующий РАЗРЕШЁННЫЙ ролик по кругу (или -1, если все заблокированы)
+        private int FindNextPlayable(int fromExclusive)
+        {
+            int n = _playlist.Count;
+            if (n == 0) return -1;
+
+            for (int k = 1; k <= n; k++)
+            {
+                var i = (fromExclusive + k) % n;
+                if (IsPlayable(_playlist[i])) return i;
+            }
+            return -1;
+        }
+
+        // Автопрокрутка: идём к следующему разрешённому.
+        // Если таковых нет — входим в режим ожидания
+        private void AdvanceAuto()
+        {
+            if (_playlist.Count == 0) return;
+
+            var next = FindNextPlayable(_index);
+            if (next < 0)
+            {
+                StartWaiting();
+                return;
+            }
+            _index = next;
+            PlayCurrent();
+        }
+
+        private void StartWaiting()
+        {
+            _waiting = true;
+            _player.Stop();
+            _outPlayer.Stop();
+            SetOnAir(false);
+            BtnPlayPause.Content = "▶";
+            VideoView.Visibility = Visibility.Collapsed;
+            UpdateWaitingUi();
+        }
+
+        private void UpdateWaitingUi()
+        {
+            var t = NextUnlockTime();
+            IdleText.Text = t.HasValue
+                ? $"ПАУЗА — следующий ролик в {t:HH:mm}"
+                : "ПАУЗА — лимиты на сегодня исчерпаны";
+            IdleText.Visibility = Visibility.Visible;
+            StatusText.Text = "Все ролики заблокированы лимитами — ожидание…";
+        }
+
+        // Когда разблокируется ближайший ролик
+        private DateTime? NextUnlockTime()
+        {
+            DateTime? best = null;
+            foreach (var it in _playlist)
+            {
+                if (!_stats.TryGetValue(it.FullPath, out var s)) continue;
+
+                if (it.IntervalMinutes > 0 && s.LastPlayed is DateTime lp)
+                {
+                    var until = lp.AddMinutes(it.IntervalMinutes);
+                    if (until > DateTime.Now && (best == null || until < best)) best = until;
+                }
+
+                if (it.MaxPlaysPerDay > 0 &&
+                    s.Daily.TryGetValue(TodayKey, out var c) && c >= it.MaxPlaysPerDay)
+                {
+                    var midnight = DateTime.Today.AddDays(1);   // обнулится в полночь
+                    if (best == null || midnight < best) best = midnight;
+                }
+            }
+            return best;
+        }
+
+        // Оранжевые пометки «почему пропущен» в списке
+        private void UpdateBlockInfos()
+        {
+            foreach (var it in _playlist)
+            {
+                var info = "";
+                _stats.TryGetValue(it.FullPath, out var s);
+
+                if (it.MaxPlaysPerDay > 0 &&
+                    s?.Daily.TryGetValue(TodayKey, out var today) == true &&
+                    today >= it.MaxPlaysPerDay)
+                {
+                    info = "⏳ лимит на сегодня";
+                }
+                else if (it.IntervalMinutes > 0 && s?.LastPlayed is DateTime lp)
+                {
+                    var until = lp.AddMinutes(it.IntervalMinutes);
+                    if (until > DateTime.Now) info = $"⏳ до {until:HH:mm}";
+                }
+
+                it.BlockInfo = info;
+            }
+        }
+
+        // Засчитать показ: всего, за сегодня, время последнего показа
+        private void RecordPlay(PlaylistItem item)
+        {
+            if (!_stats.TryGetValue(item.FullPath, out var e))
+            {
+                e = new StatEntry();
+                _stats[item.FullPath] = e;
+            }
+
+            e.Total++;
+            e.Daily[TodayKey] = e.Daily.TryGetValue(TodayKey, out var c) ? c + 1 : 1;
+            e.LastPlayed = DateTime.Now;
+
+            item.PlayCount = e.Total;
+            item.PlaysToday = e.Daily[TodayKey];
+            SaveStats();
+        }
+
+        // Оператор поправил лимиты в списке — сохранить
+        private void OnItemSettingsEdited(PlaylistItem item)
+        {
+            _plSettings[item.FullPath] = new PlaylistSettings
+            {
+                MaxPlaysPerDay = item.MaxPlaysPerDay,
+                IntervalMinutes = item.IntervalMinutes
+            };
+            SavePlSettings();
+            UpdateBlockInfos();
+            StatusText.Text =
+                $"«{item.FileName}»: лимит {item.MaxPlaysPerDay}/день, " +
+                $"интервал {item.IntervalMinutes} мин — сохранено";
+        }
+
         // ─── Масштаб FILL / FIT / STRETCH ──────────────────
-        // Масштабируем КАРТИНКУ ВНУТРИ видео-окна средствами VLC.
-        // Само видео-окно не двигается и не растёт — интерфейс не перекрывается
 
         private void OnScaleFillChecked(object sender, RoutedEventArgs e)
             => SetScaleMode("fill");
@@ -378,7 +616,6 @@ namespace LedPlayer
             if (ptr == IntPtr.Zero)
                 return "Масштаб: мостик к плееру не нашёл адрес (напишите мне — поправлю)";
 
-            // Площадка: панель превью или окно вывода
             double hw, hh;
             Visual visual;
             if (host != null)
@@ -397,7 +634,6 @@ namespace LedPlayer
 
             if (hw < 2 || hh < 2) return "";
 
-            // Физические пиксели (масштаб Windows 125% → ×1.25)
             double dpi = 1.0;
             try
             {
@@ -410,7 +646,6 @@ namespace LedPlayer
             int pw = Math.Max(2, (int)Math.Round(hw * dpi));
             int ph = Math.Max(2, (int)Math.Round(hh * dpi));
 
-            // Родное разрешение ролика (если неизвестно — считаем 16:9)
             var item = (_index >= 0 && _index < _playlist.Count) ? _playlist[_index] : null;
             double vw = item?.VideoW ?? 0;
             double vh = item?.VideoH ?? 0;
@@ -421,21 +656,17 @@ namespace LedPlayer
                 switch (_config.ScaleMode)
                 {
                     case "stretch":
-                        // РАСТЯНУТЬ: подменяем пропорции кадра пропорциями площадки
                         VlcNative.libvlc_video_set_aspect_ratio(ptr, $"{pw}:{ph}");
                         VlcNative.libvlc_video_set_scale(ptr, 0f);
                         return $"Масштаб: STRETCH — тянем на {pw}:{ph}";
 
                     case "fill":
-                        // ЗАПОЛНИТЬ: зум, пока кадр не накроет площадку.
-                        // Вылезающее обрезается границей видео-окна
                         VlcNative.libvlc_video_set_aspect_ratio(ptr, null);
                         var k = Math.Max(pw / vw, ph / vh);
                         VlcNative.libvlc_video_set_scale(ptr, (float)k);
                         return $"Масштаб: FILL — зум ×{k:F2}";
 
                     default:
-                        // ВПИСАТЬ: обычное поведение VLC — ролик целиком
                         VlcNative.libvlc_video_set_aspect_ratio(ptr, null);
                         VlcNative.libvlc_video_set_scale(ptr, 0f);
                         return "Масштаб: FIT — ролик целиком";
@@ -452,6 +683,16 @@ namespace LedPlayer
         private void OnPlayPauseClick(object sender, RoutedEventArgs e)
         {
             if (_playlist.Count == 0) return;
+
+            // Вывести из ожидания и играть первый доступный
+            if (_waiting)
+            {
+                _waiting = false;
+                var next = FindNextPlayable(_index);
+                if (next >= 0) _index = next;
+                PlayCurrent();
+                return;
+            }
 
             if (_player.IsPlaying)
             {
@@ -471,9 +712,11 @@ namespace LedPlayer
             }
         }
 
+        // ◀◀ и ▶▶ — принудительно, лимиты не смотрим (оператор всегда прав)
         private void OnPrevClick(object sender, RoutedEventArgs e)
         {
             if (_playlist.Count == 0) return;
+            _waiting = false;
             _index = (_index - 1 + _playlist.Count) % _playlist.Count;
             PlayCurrent();
         }
@@ -481,14 +724,31 @@ namespace LedPlayer
         private void OnNextClick(object sender, RoutedEventArgs e)
         {
             if (_playlist.Count == 0) return;
+            _waiting = false;
             _index = (_index + 1) % _playlist.Count;
             PlayCurrent();
         }
 
+        // Двойной клик по ролику — запустить именно его.
+        // Двойной клик по полям лимитов — это редактирование, не запуск
         private void OnPlaylistDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
+            var src = e.OriginalSource as DependencyObject;
+            var onTextBox = false;
+            while (src != null)
+            {
+                if (src is System.Windows.Controls.TextBox) { onTextBox = true; break; }
+                if (src is ListBox || src is ListBoxItem) break;
+                DependencyObject? parent = null;
+                try { parent = VisualTreeHelper.GetParent(src); }
+                catch { break; }
+                src = parent;
+            }
+            if (onTextBox) return;
+
             if (PlaylistBox.SelectedIndex >= 0)
             {
+                _waiting = false;
                 _index = PlaylistBox.SelectedIndex;
                 PlayCurrent();
             }
@@ -698,24 +958,10 @@ namespace LedPlayer
         // ─── Служебное ─────────────────────────────────────
 
         private void OnEndReached(object? sender, EventArgs e)
-        {
-            Dispatcher.BeginInvoke(() =>
-            {
-                if (_playlist.Count == 0) return;
-                _index = (_index + 1) % _playlist.Count;
-                PlayCurrent();
-            });
-        }
+            => Dispatcher.BeginInvoke(AdvanceAuto);
 
         private void OnError(object? sender, EventArgs e)
-        {
-            Dispatcher.BeginInvoke(() =>
-            {
-                if (_playlist.Count == 0) return;
-                _index = (_index + 1) % _playlist.Count;
-                PlayCurrent();
-            });
-        }
+            => Dispatcher.BeginInvoke(AdvanceAuto);
 
         private void StartWatchFolder()
         {
@@ -731,26 +977,70 @@ namespace LedPlayer
             _watcher.Renamed += (_, _) => Dispatcher.BeginInvoke(() => _ = ReloadPlaylistAsync());
         }
 
-        // ─── Статистика показов ────────────────────────────
+        // ─── Статистика (stats.json) ───────────────────────
 
         private void LoadStats()
         {
+            _stats = new Dictionary<string, StatEntry>();
             try
             {
-                if (File.Exists(StatsPath))
-                    _playCounts = JsonSerializer.Deserialize<Dictionary<string, int>>(
-                        File.ReadAllText(StatsPath)) ?? new Dictionary<string, int>();
+                if (!File.Exists(StatsPath)) return;
+                var json = File.ReadAllText(StatsPath);
+                try
+                {
+                    _stats = JsonSerializer.Deserialize<Dictionary<string, StatEntry>>(json)
+                             ?? new Dictionary<string, StatEntry>();
+                }
+                catch
+                {
+                    // старый формат: путь → общее число показов
+                    var old = JsonSerializer.Deserialize<Dictionary<string, int>>(json);
+                    if (old != null)
+                        foreach (var kv in old)
+                            _stats[kv.Key] = new StatEntry { Total = kv.Value };
+                }
             }
             catch { }
         }
 
         private void SaveStats()
         {
-            try { File.WriteAllText(StatsPath, JsonSerializer.Serialize(_playCounts)); }
+            try
+            {
+                // подрезаем историю старше 60 дней, файл не растёт вечно
+                var cutoff = DateTime.Today.AddDays(-60).ToString("yyyy-MM-dd");
+                foreach (var e in _stats.Values)
+                {
+                    var stale = e.Daily.Keys
+                        .Where(k => string.CompareOrdinal(k, cutoff) < 0).ToList();
+                    foreach (var k in stale) e.Daily.Remove(k);
+                }
+                File.WriteAllText(StatsPath, JsonSerializer.Serialize(_stats));
+            }
             catch { }
         }
 
-        // ─── Часы + добор информации о ролике ──────────────
+        // ─── Лимиты роликов (playlistSettings.json) ────────
+
+        private void LoadPlSettings()
+        {
+            try
+            {
+                if (File.Exists(PlSettingsPath))
+                    _plSettings = JsonSerializer.Deserialize<Dictionary<string, PlaylistSettings>>(
+                        File.ReadAllText(PlSettingsPath))
+                        ?? new Dictionary<string, PlaylistSettings>();
+            }
+            catch { _plSettings = new Dictionary<string, PlaylistSettings>(); }
+        }
+
+        private void SavePlSettings()
+        {
+            try { File.WriteAllText(PlSettingsPath, JsonSerializer.Serialize(_plSettings)); }
+            catch { }
+        }
+
+        // ─── Часы: ожидание, пометки, добор инфо о ролике ───
 
         private void StartClock()
         {
@@ -769,7 +1059,20 @@ namespace LedPlayer
 
         private void SyncVideoInfo()
         {
-            if (_playlist.Count > 0 && _index < _playlist.Count)
+            // Режим ожидания: как только ролик разблокируется — продолжаем сами
+            if (_waiting)
+            {
+                var next = FindNextPlayable(_index);
+                if (next >= 0)
+                {
+                    _waiting = false;
+                    _index = next;
+                    PlayCurrent();
+                }
+                else UpdateWaitingUi();
+            }
+
+            if (!_waiting && _playlist.Count > 0 && _index < _playlist.Count)
             {
                 var item = _playlist[_index];
                 try
@@ -784,18 +1087,13 @@ namespace LedPlayer
                     {
                         uint w = 0, h = 0;
                         _player.Size(0, ref w, ref h);
-                        if (w > 0 && h > 0)
-                        {
-                            item.VideoW = w;
-                            item.VideoH = h;
-                        }
+                        if (w > 0 && h > 0) { item.VideoW = w; item.VideoH = h; }
                     }
                 }
                 catch { }
             }
 
-            // Тихо подхватываем масштаб: в первые секунды после запуска
-            // ролика видео-движок ещё не готов, и первый вызов мог утонуть
+            UpdateBlockInfos();
             ApplyScaling();
         }
 
