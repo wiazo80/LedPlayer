@@ -81,7 +81,6 @@
             </Setter>
         </Style>
 
-        <!-- Маленькие поля ввода в плейлисте -->
         <Style x:Key="MiniBoxStyle" TargetType="TextBox">
             <Setter Property="Background" Value="#2A2A40"/>
             <Setter Property="Foreground" Value="#E8E8F0"/>
@@ -123,9 +122,9 @@
                              VerticalAlignment="Center"/>
                     <TextBlock x:Name="OnAirText" Text="ОЖИДАНИЕ" Foreground="#5A5A78"
                                FontSize="12" FontWeight="Bold" Margin="8,0,0,0"
-                               VerticalAlignment="Center"/>
+                             VerticalAlignment="Center"/>
                     <TextBlock x:Name="ClockText" Foreground="#9A9AB0" FontSize="14"
-                               VerticalAlignment="Center" Margin="16,0,0,0"/>
+                             VerticalAlignment="Center" Margin="16,0,0,0"/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -138,23 +137,43 @@
                 <ColumnDefinition Width="3*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- ЛЕВО: превью + управление -->
+            <!-- ЛЕВО: превью + прогресс + управление -->
             <Grid Grid.Column="0">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <Border Grid.Row="0" Background="Black" CornerRadius="8" Padding="4">
-                    <Grid x:Name="PreviewHost">
-                        <vlc:VideoView x:Name="VideoView"/>
+                    <Grid x:Name="PreviewHost" Background="Black">
+                        <vlc:VideoView x:Name="VideoView" Background="Black"/>
                         <TextBlock x:Name="IdleText" Text="Нет сигнала"
                                    Foreground="#777788" FontSize="24"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Grid>
                 </Border>
 
-                <StackPanel Grid.Row="1" Margin="0,10,0,0">
+                <!-- ПРОГРЕСС РОЛИКА -->
+                <Grid Grid.Row="1" Margin="4,6,4,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="TimeNow" Grid.Column="0" Text="00:00"
+                               Foreground="#9A9AB0" FontSize="11" VerticalAlignment="Center"
+                               Margin="0,0,8,0"/>
+                    <ProgressBar x:Name="PlayBar" Grid.Column="1" Height="5"
+                                 Minimum="0" Maximum="100" Value="0"
+                                 Background="#2A2A40" Foreground="#4C6FD1"
+                                 BorderThickness="0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TimeTotal" Grid.Column="2" Text="00:00"
+                               Foreground="#9A9AB0" FontSize="11" VerticalAlignment="Center"
+                               Margin="8,0,0,0"/>
+                </Grid>
+
+                <StackPanel Grid.Row="2" Margin="0,10,0,0">
                     <StackPanel Orientation="Horizontal">
                         <Button x:Name="BtnPrev" Content="◀◀" Width="52" Click="OnPrevClick"/>
                         <Button x:Name="BtnPlayPause" Content="▶" Width="62" Margin="6,0" Click="OnPlayPauseClick"/>
@@ -197,7 +216,8 @@
                              Background="Transparent" BorderThickness="0"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              HorizontalContentAlignment="Stretch"
-                             MouseDoubleClick="OnPlaylistDoubleClick">
+                             MouseDoubleClick="OnPlaylistDoubleClick"
+                             KeyDown="OnPlaylistBoxKeyDown">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                 <Setter Property="Foreground" Value="#E8E8F0"/>
@@ -244,9 +264,16 @@
                                                        FontSize="15" FontWeight="Bold"
                                                        HorizontalAlignment="Center"/>
                                             <StackPanel Grid.Column="1" Margin="4,0,0,0">
-                                                <TextBlock Text="{Binding FileName}" FontSize="14"
-                                                           Foreground="#E8E8F0"
-                                                           TextTrimming="CharacterEllipsis"/>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding TypeBadge}"
+                                                               Foreground="#C090E0" FontSize="11"
+                                                               FontWeight="Bold"
+                                                               VerticalAlignment="Center"
+                                                               Margin="0,0,6,0"/>
+                                                    <TextBlock Text="{Binding FileName}" FontSize="14"
+                                                               Foreground="#E8E8F0"
+                                                               TextTrimming="CharacterEllipsis"/>
+                                                </StackPanel>
                                                 <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
                                                     <TextBlock Text="{Binding DurationText}"
                                                                Foreground="#9A9AB0" FontSize="12"/>
@@ -263,25 +290,29 @@
                                             </StackPanel>
                                         </Grid>
 
-                                        <!-- Строка 2: лимиты -->
+                                        <!-- Строка 2: лимиты и длительность -->
                                         <StackPanel Grid.Row="1" Orientation="Horizontal"
                                                     Margin="38,6,0,0">
                                             <TextBlock Text="Лимит/день:" Foreground="#6E6E88"
                                                        FontSize="11" VerticalAlignment="Center"/>
                                             <TextBox Width="44" Margin="4,0,0,0"
                                                      Style="{StaticResource MiniBoxStyle}"
-                                                     Text="{Binding MaxPlaysText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                                     ToolTip="Максимум показов в день. 0 или пусто — без ограничения"/>
+                                                     Text="{Binding MaxPlaysText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"/>
                                             <TextBlock Text="Интервал, мин:" Foreground="#6E6E88"
                                                        FontSize="11" Margin="12,0,0,0"
                                                        VerticalAlignment="Center"/>
                                             <TextBox Width="48" Margin="4,0,0,0"
                                                      Style="{StaticResource MiniBoxStyle}"
-                                                     Text="{Binding IntervalText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                                     ToolTip="Пауза между показами этого ролика. 0 или пусто — без паузы"/>
-                                            <TextBlock Text="0 = без ограничений" Foreground="#565668"
-                                                       FontSize="10" Margin="10,0,0,0"
-                                                       VerticalAlignment="Center"/>
+                                                     Text="{Binding IntervalText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"/>
+                                            <StackPanel Orientation="Horizontal"
+                                                        Visibility="{Binding ImageSecsVisible}">
+                                                <TextBlock Text="Сек:" Foreground="#6E6E88"
+                                                           FontSize="11" Margin="12,0,0,0"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBox Width="40" Margin="4,0,0,0"
+                                                         Style="{StaticResource MiniBoxStyle}"
+                                                         Text="{Binding ImageSecsText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"/>
+                                            </StackPanel>
                                         </StackPanel>
                                     </Grid>
                                 </Border>
@@ -290,15 +321,35 @@
                     </ListBox>
 
                     <StackPanel Grid.Row="2" Margin="0,10,0,0">
-                        <Button Content="+  Добавить файлы"/>
-                        <Button Content="−  Убрать выбранный" Margin="0,6,0,0"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Content="📂  Открыть папку плейлиста" Click="OnOpenFolderClick"/>
+                            <Button Grid.Column="1" Content="🔄  Обновить контент"
+                                    Margin="6,0,0,0" Click="OnRefreshClick"/>
+                        </Grid>
                         <Grid Margin="0,6,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Button Content="↑ Вверх"/>
-                            <Button Grid.Column="1" Content="↓ Вниз" Margin="6,0,0,0"/>
+                            <Button Content="+  Добавить файлы" Click="OnAddFilesClick"/>
+                            <Button Grid.Column="1" Content="+  Добавить папку"
+                                    Margin="6,0,0,0" Click="OnAddFolderClick"/>
+                        </Grid>
+                        <Grid Margin="0,6,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Content="−  Убрать выбранный" Click="OnRemoveClick"/>
+                            <Button Grid.Column="1" Content="↑" Width="44" Margin="6,0,0,0"
+                                    Click="OnMoveUpClick"/>
+                            <Button Grid.Column="2" Content="↓" Width="44" Margin="6,0,0,0"
+                                    Click="OnMoveDownClick"/>
                         </Grid>
                     </StackPanel>
                 </Grid>

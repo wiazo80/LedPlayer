@@ -10,6 +10,6 @@
         ResizeMode="NoResize"
         WindowStartupLocation="Manual">
     <Grid Background="Black">
-        <vlc:VideoView x:Name="VideoView"/>
+        <vlc:VideoView x:Name="VideoView" Background="Black"/>
     </Grid>
 </Window>
