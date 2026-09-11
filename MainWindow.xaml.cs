@@ -49,6 +49,9 @@ namespace LedPlayer
         public string VideoFolder { get; set; } = @"C:\LedContent";
         public int Volume { get; set; } = 30;
         public bool Shuffle { get; set; } = false;
+        public bool AutoStart { get; set; } = false;          // старт эфира при запуске программы
+        public string PlaylistMode { get; set; } = "folder";  // "folder" | "list"
+        public string ActiveComposition { get; set; } = "";
 
         public int CompW { get; set; } = 1248;
         public int CompH { get; set; } = 576;
@@ -81,6 +84,22 @@ namespace LedPlayer
         public int ImageSeconds { get; set; } = 10;
     }
 
+    // ─── Композиция (comps.json): снимок плейлиста ────────
+    public class CompItem
+    {
+        public string Path { get; set; } = "";
+        public int Max { get; set; }
+        public int Int { get; set; }
+        public int Sec { get; set; } = 10;
+    }
+
+    public class CompSnapshot
+    {
+        public int W { get; set; } = 1248;
+        public int H { get; set; } = 576;
+        public List<CompItem> Items { get; set; } = new();
+    }
+
     // ─── Один пункт плейлиста ─────────────────────────────
     public class PlaylistItem : System.ComponentModel.INotifyPropertyChanged
     {
@@ -102,6 +121,21 @@ namespace LedPlayer
         public System.Windows.Visibility ImageSecsVisible => IsImage
             ? System.Windows.Visibility.Visible
             : System.Windows.Visibility.Collapsed;
+
+        private bool _fileMissing;
+        public bool FileMissing
+        {
+            get => _fileMissing;
+            set
+            {
+                if (_fileMissing == value) return;
+                _fileMissing = value;
+                OnProp(nameof(FileMissing));
+                OnProp(nameof(MissingText));
+            }
+        }
+
+        public string MissingText => FileMissing ? "файл отсутствует" : "";
 
         private long _durationMs;
         public long DurationMs
@@ -260,13 +294,13 @@ namespace LedPlayer
         private Config _config = new();
         private Dictionary<string, StatEntry> _stats = new();
         private Dictionary<string, PlaylistSettings> _plSettings = new();
+        private Dictionary<string, CompSnapshot> _comps = new();
+        private string _activeComp = "";
         private bool _isAppClosing;
         private bool _waiting;
-
-        // Текущий показ — «тест в превью» из-за лимита: вывод не задействуем
         private bool _previewOnly;
+        private bool _autoStartDone;
 
-        // Прогресс картинок считаем сами, по часам
         private DateTime _imgStartedAt;
         private double _imgElapsedBase;
 
@@ -284,6 +318,7 @@ namespace LedPlayer
         private string StatsPath => Path.Combine(AppContext.BaseDirectory, "stats.json");
         private string PlSettingsPath => Path.Combine(AppContext.BaseDirectory, "playlistSettings.json");
         private string ManualListPath => Path.Combine(AppContext.BaseDirectory, "manualList.json");
+        private string CompsPath => Path.Combine(AppContext.BaseDirectory, "comps.json");
         private static string TodayKey => DateTime.Now.ToString("yyyy-MM-dd");
         public Config Config => _config;
 
@@ -300,11 +335,14 @@ namespace LedPlayer
             LoadStats();
             LoadPlSettings();
             LoadManualList();
+            LoadComps();
+            _activeComp = _config.ActiveComposition;
             InitPlayer();
             _ = ReloadPlaylistAsync();
             StartClock();
             StartProgressTimer();
             RestoreOutput();
+            UpdateAutoStartButton();
 
             _resizeDebounce.Tick += (_, _) => { _resizeDebounce.Stop(); ApplyScaling(); };
             PreviewHost.SizeChanged += (_, _) => { _resizeDebounce.Stop(); _resizeDebounce.Start(); };
@@ -375,18 +413,28 @@ namespace LedPlayer
             return VideoExt.Contains(ext) || ImageExt.Contains(ext);
         }
 
+        // Режим "folder": всё из папки + добавленное вручную.
+        // Режим "list" (композиция): ТОЛЬКО список — что в папке не в списке, не играет.
+        // Файлы, которых нет на диске, НЕ выкидываем — показываем сноской
         private List<string> CollectFiles()
         {
-            var fromFolder = Directory.Exists(_config.VideoFolder)
-                ? Directory.EnumerateFiles(_config.VideoFolder)
-                    .Where(IsMediaFile)
-                    .ToList()
-                : new List<string>();
+            List<string> all;
+            if (_config.PlaylistMode == "list")
+            {
+                all = _manualFiles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            }
+            else
+            {
+                var fromFolder = Directory.Exists(_config.VideoFolder)
+                    ? Directory.EnumerateFiles(_config.VideoFolder)
+                        .Where(IsMediaFile)
+                        .ToList()
+                    : new List<string>();
 
-            var all = _manualFiles.Concat(fromFolder)
-                .Where(File.Exists)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+                all = _manualFiles.Concat(fromFolder)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
 
             var ordered = new List<string>();
             foreach (var p in _manualOrder)
@@ -417,6 +465,7 @@ namespace LedPlayer
                     Number = i + 1,
                     SizeBytes = info.Exists ? info.Length : 0,
                     IsImage = ImageExt.Contains(ext),
+                    FileMissing = !info.Exists,
                     PlayCount = se?.Total ?? 0,
                     PlaysToday = se?.Daily.TryGetValue(TodayKey, out var pc) == true ? pc : 0,
                     MaxPlaysPerDay = st?.MaxPlaysPerDay ?? 0,
@@ -432,7 +481,7 @@ namespace LedPlayer
 
             await Task.Run(() =>
             {
-                foreach (var item in _playlist.Where(x => !x.IsImage))
+                foreach (var item in _playlist.Where(x => !x.IsImage && !x.FileMissing))
                 {
                     try
                     {
@@ -447,10 +496,22 @@ namespace LedPlayer
             RefreshPlaylistUi();
             UpdateIdleState();
 
-            // Автостарта НЕТ: программа ждёт оператора (кнопка ▶)
-            StatusText.Text = _playlist.Count > 0
-                ? "Готов — нажмите ▶ для запуска"
-                : "Готов — плейлист пуст";
+            // Автостарт: один раз после загрузки плейлиста
+            if (_config.AutoStart && !_autoStartDone && _playlist.Count > 0)
+            {
+                _autoStartDone = true;
+                var next = FindNextPlayable(_index);
+                if (next >= 0) { _index = next; PlayCurrent(); }
+                else StartWaiting();
+                return;
+            }
+
+            if (!_config.AutoStart && !_player.IsPlaying && !_waiting)
+            {
+                StatusText.Text = _playlist.Count > 0
+                    ? "Готов — нажмите ▶ для запуска"
+                    : "Готов — плейлист пуст";
+            }
         }
 
         private void RefreshPlaylistUi()
@@ -459,10 +520,14 @@ namespace LedPlayer
             if (_index >= 0 && _index < _playlist.Count)
                 PlaylistBox.SelectedIndex = _index;
 
-            StatusRight.Text = $"Роликов: {_playlist.Count}  ·  Папка: {_config.VideoFolder}";
+            var miss = _playlist.Count(x => x.FileMissing);
+            var mode = _config.PlaylistMode == "list"
+                ? $"  ·  список: «{_activeComp}»"
+                : "";
+            StatusRight.Text = $"Роликов: {_playlist.Count}" +
+                (miss > 0 ? $"  ·  отсутствуют: {miss}" : "") + mode;
         }
 
-        // Что показывать в зоне превью, когда ничего не играет
         private void UpdateIdleState()
         {
             if (_waiting)
@@ -491,14 +556,19 @@ namespace LedPlayer
             }
         }
 
-        // Запуск ролика из _index.
-        // Если ролик заблокирован лимитом — только превью («тест»), вывод молчит
         private void PlayCurrent()
         {
             if (_playlist.Count == 0) return;
             if (_index >= _playlist.Count) _index = 0;
 
             var item = _playlist[_index];
+
+            if (item.FileMissing)
+            {
+                StatusText.Text = $"Файл отсутствует: {item.FileName}";
+                return;
+            }
+
             var playable = IsPlayable(item);
             _previewOnly = !playable;
 
@@ -513,7 +583,6 @@ namespace LedPlayer
 
             if (_previewOnly)
             {
-                // ЛИМИТ: вывод глушим, показ НЕ засчитываем
                 _outPlayer.Stop();
                 HideOutputVideo();
                 SetAirLimit();
@@ -564,6 +633,8 @@ namespace LedPlayer
 
         private bool IsPlayable(PlaylistItem it)
         {
+            if (it.FileMissing) return false;
+
             if (!_stats.TryGetValue(it.FullPath, out var s)) return true;
 
             if (it.MaxPlaysPerDay > 0 &&
@@ -623,6 +694,7 @@ namespace LedPlayer
             DateTime? best = null;
             foreach (var it in _playlist)
             {
+                if (it.FileMissing) continue;
                 if (!_stats.TryGetValue(it.FullPath, out var s)) continue;
 
                 if (it.IntervalMinutes > 0 && s.LastPlayed is DateTime lp)
@@ -646,6 +718,12 @@ namespace LedPlayer
             foreach (var it in _playlist)
             {
                 var info = "";
+                if (it.FileMissing)
+                {
+                    it.BlockInfo = "";
+                    continue;
+                }
+
                 _stats.TryGetValue(it.FullPath, out var s);
 
                 if (it.MaxPlaysPerDay > 0 &&
@@ -718,35 +796,11 @@ namespace LedPlayer
                     "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
-        // 🔄 Обновить контент: пересканировать папку и файлы на диске —
-        // подхватить новые, убрать удалённые. Полезно, когда файлы
-        // закинули в папку мимо программы (Проводник, флешка, сеть)
+
         private void OnRefreshClick(object sender, RoutedEventArgs e)
         {
             _ = ReloadPlaylistAsync();
             StatusText.Text = "Плейлист обновлён";
-        }
-        // Enter в поле списка — записать значение и убрать курсор из поля.
-        // Esc — отменить правку, вернуть прежнее значение
-        private void OnPlaylistBoxKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
-        {
-            if (e.OriginalSource is System.Windows.Controls.TextBox tb)
-            {
-                var expr = tb.GetBindingExpression(System.Windows.Controls.TextBox.TextProperty);
-
-                if (e.Key == System.Windows.Input.Key.Enter)
-                {
-                    expr?.UpdateSource();       // записать значение прямо сейчас
-                    System.Windows.Input.Keyboard.Focus(PlaylistBox); // курсор убрать из поля
-                    e.Handled = true;
-                }
-                else if (e.Key == System.Windows.Input.Key.Escape)
-                {
-                    expr?.UpdateTarget();       // отменить — вернуть старое
-                    System.Windows.Input.Keyboard.Focus(PlaylistBox);
-                    e.Handled = true;
-                }
-            }
         }
 
         private void OnAddFilesClick(object sender, RoutedEventArgs e)
@@ -829,10 +883,10 @@ namespace LedPlayer
             _ = ReloadPlaylistAsync().ContinueWith(_ =>
                 Dispatcher.BeginInvoke(() =>
                 {
-                    if (inFolder)
+                    if (inFolder && _config.PlaylistMode == "folder")
                         StatusText.Text =
                             $"«{name}» убран, но файл лежит в папке {_config.VideoFolder} — " +
-                            "уберите его из папки, иначе он вернётся";
+                            "в режиме «вся папка» он вернётся";
                     else
                         StatusText.Text = $"«{name}» убран из плейлиста";
 
@@ -872,6 +926,262 @@ namespace LedPlayer
 
             PlaylistBox.SelectedIndex = j;
             StatusText.Text = $"Порядок: «{sel.FileName}» " + (dir < 0 ? "выше" : "ниже");
+        }
+
+        // Enter/Esc в полях плейлиста
+        private void OnPlaylistBoxKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.OriginalSource is System.Windows.Controls.TextBox tb)
+            {
+                var expr = tb.GetBindingExpression(System.Windows.Controls.TextBox.TextProperty);
+
+                if (e.Key == System.Windows.Input.Key.Enter)
+                {
+                    expr?.UpdateSource();
+                    System.Windows.Input.Keyboard.Focus(PlaylistBox);
+                    e.Handled = true;
+                }
+                else if (e.Key == System.Windows.Input.Key.Escape)
+                {
+                    expr?.UpdateTarget();
+                    System.Windows.Input.Keyboard.Focus(PlaylistBox);
+                    e.Handled = true;
+                }
+            }
+        }
+
+        // ─── Автостарт ─────────────────────────────────────
+
+        private void OnAutoStartClick(object sender, RoutedEventArgs e)
+        {
+            _config.AutoStart = !_config.AutoStart;
+            SaveConfig();
+            UpdateAutoStartButton();
+
+            StatusText.Text = _config.AutoStart
+                ? "Автостарт ВКЛЮЧЁН — эфир начнётся сам при следующем запуске программы"
+                : "Автостарт ВЫКЛЮЧЕН — при запуске программы ничего не играет";
+        }
+
+        private void UpdateAutoStartButton()
+        {
+            if (_config.AutoStart)
+            {
+                BtnAutoStart.Background = new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x5B));
+                BtnAutoStart.Content = "Автостарт: ВКЛ";
+            }
+            else
+            {
+                BtnAutoStart.Background = new SolidColorBrush(Color.FromRgb(0x8A, 0x77, 0x2C));
+                BtnAutoStart.Content = "Автостарт: ВЫКЛ";
+            }
+            BtnAutoStart.Foreground = Brushes.White;
+        }
+
+        // ─── Меню «Композиция» ─────────────────────────────
+
+        private void OnCompositionClick(object sender, RoutedEventArgs e)
+        {
+            BuildCompositionMenu();
+            CompositionMenu.IsOpen = true;
+        }
+
+        private void BuildCompositionMenu()
+        {
+            CompositionMenuPanel.Children.Clear();
+
+            var modeText = _config.PlaylistMode == "list" && _activeComp != ""
+                ? $"Режим: точный список — «{_activeComp}»"
+                : "Режим: вся папка + добавленное вручную";
+            CompositionMenuPanel.Children.Add(new TextBlock
+            {
+                Text = modeText,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x9A, 0xB0)),
+                FontSize = 11,
+                Margin = new Thickness(6, 4, 0, 4)
+            });
+
+            if (_config.PlaylistMode == "list")
+                CompositionMenuPanel.Children.Add(
+                    MakeMenuItem("⟲  Вернуться к режиму «вся папка»", SwitchToFolderMode));
+
+            AddMenuSeparator();
+
+            CompositionMenuPanel.Children.Add(MakeMenuItem(
+                "💾  Сохранить текущий плейлист как композицию…", OnSaveCompositionMenu));
+
+            AddMenuSeparator();
+
+            CompositionMenuPanel.Children.Add(new TextBlock
+            {
+                Text = "СОХРАНЁННЫЕ КОМПОЗИЦИИ",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x9A, 0xB0)),
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(6, 2, 0, 4)
+            });
+
+            if (_comps.Count == 0)
+            {
+                CompositionMenuPanel.Children.Add(new TextBlock
+                {
+                    Text = "(пока ничего не сохранено)",
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x6E, 0x6E, 0x88)),
+                    FontSize = 12,
+                    Margin = new Thickness(6, 2, 0, 4)
+                });
+            }
+
+            foreach (var kv in _comps.OrderBy(x => x.Key))
+            {
+                var name = kv.Key;
+                var row = new Grid();
+                row.ColumnDefinitions.Add(
+                    new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(
+                    new ColumnDefinition { Width = GridLength.Auto });
+
+                var title = $"▶  {name}   ({kv.Value.Items.Count} рол.)" +
+                            (name == _activeComp ? "   ✓ активна" : "");
+                var applyBtn = MakeMenuItem(title, () => ApplyComposition(name));
+                row.Children.Add(applyBtn);
+
+                var delBtn = new Button
+                {
+                    Content = "✕",
+                    FontSize = 13,
+                    Padding = new Thickness(10, 6, 10, 6),
+                    Margin = new Thickness(2, 1, 2, 1),
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0x90, 0x90))
+                };
+                delBtn.Style = (Style)FindResource("MenuButtonStyle");
+                delBtn.Click += (_, _) => { CompositionMenu.IsOpen = false; DeleteComposition(name); };
+                Grid.SetColumn(delBtn, 1);
+                row.Children.Add(delBtn);
+
+                CompositionMenuPanel.Children.Add(row);
+            }
+        }
+
+        private void AddMenuSeparator()
+        {
+            CompositionMenuPanel.Children.Add(new Border
+            {
+                Height = 1,
+                Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x55)),
+                Margin = new Thickness(4, 5, 4, 5)
+            });
+        }
+
+        private void OnSaveCompositionMenu()
+        {
+            if (_playlist.Count == 0)
+            {
+                StatusText.Text = "Плейлист пуст — нечего сохранять";
+                return;
+            }
+
+            var prompt = new PromptWindow { Owner = this };
+            if (prompt.ShowDialog() == true)
+            {
+                var name = (prompt.InputText ?? "").Trim();
+                if (name == "")
+                {
+                    StatusText.Text = "Имя пустое — композиция не сохранена";
+                    return;
+                }
+                SaveComposition(name);
+            }
+        }
+
+        private void SaveComposition(string name)
+        {
+            var snap = new CompSnapshot
+            {
+                W = _config.CompW,
+                H = _config.CompH,
+                Items = _playlist.Select(it => new CompItem
+                {
+                    Path = it.FullPath,
+                    Max = it.MaxPlaysPerDay,
+                    Int = it.IntervalMinutes,
+                    Sec = it.ImageSeconds
+                }).ToList()
+            };
+
+            _comps[name] = snap;
+            SaveComps();
+
+            _activeComp = name;
+            _config.ActiveComposition = name;
+            _config.PlaylistMode = "list";
+            _manualFiles = snap.Items.Select(i => i.Path).ToList();
+            _manualOrder = _manualFiles.ToList();
+            SaveConfig();
+            SaveManualList();
+            RefreshPlaylistUi();
+
+            StatusText.Text =
+                $"Композиция «{name}» сохранена ({snap.Items.Count} роликов) и включена";
+        }
+
+        private void ApplyComposition(string name)
+        {
+            if (!_comps.TryGetValue(name, out var comp)) return;
+
+            _config.PlaylistMode = "list";
+            _config.CompW = comp.W;
+            _config.CompH = comp.H;
+            _config.ActiveComposition = name;
+            _manualFiles = comp.Items.Select(i => i.Path).ToList();
+            _manualOrder = _manualFiles.ToList();
+            foreach (var i in comp.Items)
+                _plSettings[i.Path] = new PlaylistSettings
+                {
+                    MaxPlaysPerDay = i.Max,
+                    IntervalMinutes = i.Int,
+                    ImageSeconds = i.Sec
+                };
+            _activeComp = name;
+
+            SaveConfig();
+            SavePlSettings();
+            SaveManualList();
+
+            _index = 0;
+            _ = ReloadPlaylistAsync();
+            StatusText.Text = $"Композиция «{name}» включена ({comp.Items.Count} роликов)";
+        }
+
+        private void DeleteComposition(string name)
+        {
+            if (MessageBox.Show(this, $"Удалить композицию «{name}»?", "Подтверждение",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+
+            _comps.Remove(name);
+            SaveComps();
+
+            if (_activeComp == name)
+            {
+                _activeComp = "";
+                _config.ActiveComposition = "";
+                _config.PlaylistMode = "folder";
+                SaveConfig();
+                _ = ReloadPlaylistAsync();
+            }
+
+            StatusText.Text = $"Композиция «{name}» удалена";
+        }
+
+        private void SwitchToFolderMode()
+        {
+            _config.PlaylistMode = "folder";
+            _config.ActiveComposition = "";
+            _activeComp = "";
+            SaveConfig();
+            _ = ReloadPlaylistAsync();
+            StatusText.Text = "Режим: вся папка + добавленное вручную";
         }
 
         // ─── Масштаб FILL / FIT / STRETCH ──────────────────
@@ -977,13 +1287,12 @@ namespace LedPlayer
             }
         }
 
-        // ─── Транспорт: ▶ / пауза ──────────────────────────
+        // ─── Транспорт ─────────────────────────────────────
 
         private void OnPlayPauseClick(object sender, RoutedEventArgs e)
         {
             if (_playlist.Count == 0) return;
 
-            // Выходим из ожидания: играем следующий доступный
             if (_waiting)
             {
                 _waiting = false;
@@ -998,13 +1307,8 @@ namespace LedPlayer
                 _player.Pause();
                 if (!_previewOnly) _outPlayer.Pause();
 
-                // Картинку на паузе «замораживаем» нашими часами
-                if (!_previewOnly || true)
-                {
-                    var it = _playlist[_index];
-                    if (it.IsImage)
-                        _imgElapsedBase += (DateTime.Now - _imgStartedAt).TotalSeconds;
-                }
+                if (_playlist[_index].IsImage)
+                    _imgElapsedBase += (DateTime.Now - _imgStartedAt).TotalSeconds;
 
                 BtnPlayPause.Content = "▶";
                 StatusText.Text = _previewOnly ? "Пауза (тест)" : "Пауза";
@@ -1012,21 +1316,18 @@ namespace LedPlayer
             }
             else if (_player.Time > 0)
             {
-                // Продолжить с места остановки
                 if (_playlist[_index].IsImage) _imgStartedAt = DateTime.Now;
                 _player.Play();
                 if (!_previewOnly) _outPlayer.Play();
                 BtnPlayPause.Content = "❚❚";
-                SetOnAir(_previewOnly ? false : true);
                 if (_previewOnly) SetAirLimit();
+                else SetOnAir(true);
                 StatusText.Text = _previewOnly
                     ? "ЛИМИТ — продолжение теста в предпросмотре"
                     : $"Играет: {Path.GetFileName(_playlist[_index].FullPath)}";
             }
             else
             {
-                // Холодный старт: текущий разрешён → играть его;
-                // заблокирован → первый доступный; совсем никого → тест текущего
                 if (IsPlayable(_playlist[_index]))
                 {
                     PlayCurrent();
@@ -1038,6 +1339,33 @@ namespace LedPlayer
                     PlayCurrent();
                 }
             }
+        }
+
+        // ■ — полная остановка: ролик сбрасывается в начало
+        private void OnStopClick(object sender, RoutedEventArgs e)
+        {
+            if (_playlist.Count == 0) return;
+
+            _player.Stop();
+            _outPlayer.Stop();
+
+            _waiting = false;
+            _previewOnly = false;
+            _imgElapsedBase = 0;
+
+            HideOutputVideo();
+            BtnPlayPause.Content = "▶";
+            SetAirIdle();
+
+            VideoView.Visibility = Visibility.Collapsed;
+            IdleText.Text = "Готов — ▶ запуск";
+            IdleText.Visibility = Visibility.Visible;
+
+            PlayBar.Value = 0;
+            TimeNow.Text = "00:00";
+            TimeTotal.Text = "00:00";
+
+            StatusText.Text = "Стоп";
         }
 
         private void OnPrevClick(object sender, RoutedEventArgs e)
@@ -1135,6 +1463,7 @@ namespace LedPlayer
             btn.Click += (_, _) =>
             {
                 OutputMenu.IsOpen = false;
+                CompositionMenu.IsOpen = false;
                 action();
             };
             return btn;
@@ -1249,12 +1578,10 @@ namespace LedPlayer
             _outputWindow?.Close();
         }
 
-        // Синхронизация окна вывода с текущим состоянием
         private void SyncOutputPlayback()
         {
             if (_outputWindow == null) return;
 
-            // Ничего не играет (или тест из-за лимита) — вывод остаётся чёрным
             if (!_player.IsPlaying || _previewOnly)
             {
                 _outPlayer.Stop();
@@ -1400,6 +1727,30 @@ namespace LedPlayer
             public List<string> Order { get; set; } = new();
         }
 
+        // ─── Композиции (comps.json) ───────────────────────
+
+        private void LoadComps()
+        {
+            try
+            {
+                if (File.Exists(CompsPath))
+                    _comps = JsonSerializer.Deserialize<Dictionary<string, CompSnapshot>>(
+                        File.ReadAllText(CompsPath))
+                        ?? new Dictionary<string, CompSnapshot>();
+            }
+            catch { _comps = new Dictionary<string, CompSnapshot>(); }
+        }
+
+        private void SaveComps()
+        {
+            try
+            {
+                File.WriteAllText(CompsPath,
+                    JsonSerializer.Serialize(_comps, new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { }
+        }
+
         // ─── Часы ──────────────────────────────────────────
 
         private void StartClock()
@@ -1419,7 +1770,6 @@ namespace LedPlayer
 
         private void SyncVideoInfo()
         {
-            // Режим ожидания: как только кто-то разблокируется — продолжаем сами
             if (_waiting)
             {
                 var next = FindNextPlayable(_index);
@@ -1472,7 +1822,7 @@ namespace LedPlayer
         private void UpdateProgress()
         {
             if (_playlist.Count == 0 || _index >= _playlist.Count ||
-                !_player.IsPlaying && _player.Time <= 0)
+                (!_player.IsPlaying && _player.Time <= 0))
             {
                 PlayBar.Value = 0;
                 return;
@@ -1523,7 +1873,6 @@ namespace LedPlayer
             OnAirText.Text = onAir ? "В ЭФИРЕ" : "ПАУЗА";
         }
 
-        // Жёлтое состояние: тест в превью из-за лимита
         private void SetAirLimit()
         {
             var brush = new SolidColorBrush(Color.FromRgb(0xE0, 0xC0, 0x60));
@@ -1532,9 +1881,12 @@ namespace LedPlayer
             OnAirText.Text = "ЛИМИТ";
         }
 
-        private void OnCompositionClick(object sender, RoutedEventArgs e)
+        private void SetAirIdle()
         {
-            StatusText.Text = "Композиция — оживим на следующем шаге ;)";
+            var brush = new SolidColorBrush(Color.FromRgb(0x5A, 0x5A, 0x78));
+            OnAirDot.Fill = brush;
+            OnAirText.Foreground = brush;
+            OnAirText.Text = "ОЖИДАНИЕ";
         }
     }
 }

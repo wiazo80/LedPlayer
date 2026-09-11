@@ -110,11 +110,13 @@
                     <TextBlock Text="— пульт управления" Foreground="#5A5A78" FontSize="12"
                                VerticalAlignment="Center" Margin="6,0,0,0"/>
                     <Rectangle Width="1" Height="22" Fill="#3A3A55" Margin="18,0"/>
-                    <Button Content="Композиция" FontSize="13" Padding="10,5"
-                            Click="OnCompositionClick"/>
+                    <Button x:Name="BtnComposition" Content="Композиция" FontSize="13"
+                            Padding="10,5" Click="OnCompositionClick"/>
                     <Button x:Name="BtnOutput" Content="Окно вывода" FontSize="13"
                             Padding="10,5" Margin="6,0,0,0" Click="OnOutputClick"/>
                     <Button Content="Настройки" FontSize="13" Padding="10,5" Margin="6,0,0,0"/>
+                    <Button x:Name="BtnAutoStart" Content="Автостарт: ВЫКЛ" FontSize="13"
+                            Padding="10,5" Margin="18,0,0,0" Click="OnAutoStartClick"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
                             HorizontalAlignment="Right">
@@ -154,7 +156,7 @@
                     </Grid>
                 </Border>
 
-                <!-- ПРОГРЕСС РОЛИКА -->
+                <!-- ПРОГРЕСС -->
                 <Grid Grid.Row="1" Margin="4,6,4,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -177,10 +179,11 @@
                     <StackPanel Orientation="Horizontal">
                         <Button x:Name="BtnPrev" Content="◀◀" Width="52" Click="OnPrevClick"/>
                         <Button x:Name="BtnPlayPause" Content="▶" Width="62" Margin="6,0" Click="OnPlayPauseClick"/>
-                        <Button x:Name="BtnNext" Content="▶▶" Width="52" Click="OnNextClick"/>
+                        <Button x:Name="BtnStop" Content="■" Width="52" Click="OnStopClick"/>
+                        <Button x:Name="BtnNext" Content="▶▶" Width="52" Margin="6,0,0,0" Click="OnNextClick"/>
                         <TextBlock Text="Громкость" Foreground="#9A9AB0"
-                                   VerticalAlignment="Center" Margin="20,0,8,0"/>
-                        <Slider x:Name="VolumeSlider" Width="140" Minimum="0" Maximum="100"
+                                   VerticalAlignment="Center" Margin="14,0,8,0"/>
+                        <Slider x:Name="VolumeSlider" Width="130" Minimum="0" Maximum="100"
                                 VerticalAlignment="Center" ValueChanged="OnVolumeChanged"/>
                     </StackPanel>
 
@@ -254,7 +257,6 @@
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
 
-                                        <!-- Строка 1: номер, имя, статистика -->
                                         <Grid Grid.Row="0">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="34"/>
@@ -286,11 +288,13 @@
                                                     <TextBlock Text="{Binding BlockInfo}"
                                                                Foreground="#E0A050" FontSize="12"
                                                                Margin="12,0,0,0"/>
+                                                    <TextBlock Text="{Binding MissingText}"
+                                                               Foreground="#E07070" FontSize="12"
+                                                               Margin="12,0,0,0"/>
                                                 </StackPanel>
                                             </StackPanel>
                                         </Grid>
 
-                                        <!-- Строка 2: лимиты и длительность -->
                                         <StackPanel Grid.Row="1" Orientation="Horizontal"
                                                     Margin="38,6,0,0">
                                             <TextBlock Text="Лимит/день:" Foreground="#6E6E88"
@@ -366,11 +370,21 @@
             </Grid>
         </Border>
 
+        <!-- Меню «Окно вывода» -->
         <Popup x:Name="OutputMenu" StaysOpen="False" Placement="Bottom"
                PlacementTarget="{Binding ElementName=BtnOutput}" AllowsTransparency="True">
             <Border Background="#2A2A40" CornerRadius="8" Padding="6"
                     BorderBrush="#3A3A55" BorderThickness="1">
                 <StackPanel x:Name="OutputMenuPanel" MinWidth="280"/>
+            </Border>
+        </Popup>
+
+        <!-- Меню «Композиция» -->
+        <Popup x:Name="CompositionMenu" StaysOpen="False" Placement="Bottom"
+               PlacementTarget="{Binding ElementName=BtnComposition}" AllowsTransparency="True">
+            <Border Background="#2A2A40" CornerRadius="8" Padding="6"
+                    BorderBrush="#3A3A55" BorderThickness="1">
+                <StackPanel x:Name="CompositionMenuPanel" MinWidth="360"/>
             </Border>
         </Popup>
     </Grid>
