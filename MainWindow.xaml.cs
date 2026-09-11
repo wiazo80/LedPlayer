@@ -49,8 +49,8 @@ namespace LedPlayer
         public string VideoFolder { get; set; } = @"C:\LedContent";
         public int Volume { get; set; } = 30;
         public bool Shuffle { get; set; } = false;
-        public bool AutoStart { get; set; } = false;          // старт эфира при запуске программы
-        public string PlaylistMode { get; set; } = "folder";  // "folder" | "list"
+        public bool AutoStart { get; set; } = false;
+        public string PlaylistMode { get; set; } = "folder";
         public string ActiveComposition { get; set; } = "";
 
         public int CompW { get; set; } = 1248;
@@ -84,7 +84,7 @@ namespace LedPlayer
         public int ImageSeconds { get; set; } = 10;
     }
 
-    // ─── Композиция (comps.json): снимок плейлиста ────────
+    // ─── Композиция (comps.json) ──────────────────────────
     public class CompItem
     {
         public string Path { get; set; } = "";
@@ -119,6 +119,23 @@ namespace LedPlayer
         public string TypeBadge => IsImage ? "🖼" : "";
 
         public System.Windows.Visibility ImageSecsVisible => IsImage
+            ? System.Windows.Visibility.Visible
+            : System.Windows.Visibility.Collapsed;
+
+        private bool _isPlaying;
+        public bool IsPlaying
+        {
+            get => _isPlaying;
+            set
+            {
+                if (_isPlaying == value) return;
+                _isPlaying = value;
+                OnProp(nameof(IsPlaying));
+                OnProp(nameof(PlayGlyph));
+            }
+        }
+
+        public System.Windows.Visibility PlayGlyph => IsPlaying
             ? System.Windows.Visibility.Visible
             : System.Windows.Visibility.Collapsed;
 
@@ -303,6 +320,13 @@ namespace LedPlayer
 
         private DateTime _imgStartedAt;
         private double _imgElapsedBase;
+        private DateTime _curStartedAt;
+
+        // Предзагрузка следующего ролика — чтобы переход был быстрее
+        private Media? _nextMediaA;   // для превью
+        private Media? _nextMediaB;   // для окна вывода
+        private string _nextMediaPath = "";
+        private readonly List<Media> _mediaGarbage = new(); // к отложенному освобождению
 
         private List<string> _manualFiles = new();
         private List<string> _manualOrder = new();
@@ -413,9 +437,6 @@ namespace LedPlayer
             return VideoExt.Contains(ext) || ImageExt.Contains(ext);
         }
 
-        // Режим "folder": всё из папки + добавленное вручную.
-        // Режим "list" (композиция): ТОЛЬКО список — что в папке не в списке, не играет.
-        // Файлы, которых нет на диске, НЕ выкидываем — показываем сноской
         private List<string> CollectFiles()
         {
             List<string> all;
@@ -443,12 +464,23 @@ namespace LedPlayer
                     string.Equals(a, p, StringComparison.OrdinalIgnoreCase));
                 if (hit != null) { ordered.Add(hit); all.Remove(hit); }
             }
-            ordered.AddRange(all.OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
-            return ordered;
+
+            // Неупорядоченные остатки: по алфавиту, НО пришиваем в конец
+            // сохранённого порядка — новые файлы всегда в конец списка
+            var rest = all.OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
+            if (rest.Count > 0)
+            {
+                _manualOrder.AddRange(rest);
+                SaveManualList();
+            }
+
+            return ordered.Concat(rest).ToList();
         }
 
         private async Task ReloadPlaylistAsync()
         {
+            var playingPath = _playlist.FirstOrDefault(x => x.IsPlaying)?.FullPath;
+
             var files = CollectFiles();
 
             var items = new List<PlaylistItem>();
@@ -479,6 +511,18 @@ namespace LedPlayer
             _playlist = new ObservableCollection<PlaylistItem>(items);
             if (_index >= _playlist.Count) _index = 0;
 
+            // Если что-то играло — не терять это состояние
+            if (playingPath != null)
+            {
+                var p = _playlist.FirstOrDefault(x =>
+                    string.Equals(x.FullPath, playingPath, StringComparison.OrdinalIgnoreCase));
+                if (p != null)
+                {
+                    p.IsPlaying = true;
+                    _index = _playlist.IndexOf(p);
+                }
+            }
+
             await Task.Run(() =>
             {
                 foreach (var item in _playlist.Where(x => !x.IsImage && !x.FileMissing))
@@ -496,7 +540,6 @@ namespace LedPlayer
             RefreshPlaylistUi();
             UpdateIdleState();
 
-            // Автостарт: один раз после загрузки плейлиста
             if (_config.AutoStart && !_autoStartDone && _playlist.Count > 0)
             {
                 _autoStartDone = true;
@@ -512,6 +555,8 @@ namespace LedPlayer
                     ? "Готов — нажмите ▶ для запуска"
                     : "Готов — плейлист пуст";
             }
+
+            PreloadNext();
         }
 
         private void RefreshPlaylistUi()
@@ -556,6 +601,15 @@ namespace LedPlayer
             }
         }
 
+        // Медиа для ролика (с опцией длительности для картинок)
+        private Media CreateMediaFor(PlaylistItem item)
+        {
+            var m = new Media(_libVlc, new Uri(item.FullPath));
+            if (item.IsImage)
+                m.AddOption($":image-duration={Math.Max(1, item.ImageSeconds)}");
+            return m;
+        }
+
         private void PlayCurrent()
         {
             if (_playlist.Count == 0) return;
@@ -572,14 +626,46 @@ namespace LedPlayer
             var playable = IsPlayable(item);
             _previewOnly = !playable;
 
-            using var media = new Media(_libVlc, new Uri(item.FullPath));
+            // Подсветка «сейчас играет»
+            foreach (var it in _playlist) it.IsPlaying = false;
+            item.IsPlaying = true;
+
+            // Готовые (предзагруженные) медиа — если совпали
+            Media media;
+            Media? media2 = null;
+
+            if (_nextMediaPath == item.FullPath && _nextMediaA != null)
+            {
+                media = _nextMediaA;
+                _nextMediaA = null;
+                if (!_previewOnly && _nextMediaB != null)
+                {
+                    media2 = _nextMediaB;
+                    _nextMediaB = null;
+                }
+                _nextMediaPath = "";
+            }
+            else
+            {
+                media = CreateMediaFor(item);
+                if (!_previewOnly) media2 = CreateMediaFor(item);
+            }
+
+            // Лишние предзагруженные — отложенно освободить
+            if (_nextMediaA != null || _nextMediaB != null)
+                DisposePreloaded();
+
             if (item.IsImage)
             {
-                media.AddOption($":image-duration={Math.Max(1, item.ImageSeconds)}");
                 _imgElapsedBase = 0;
                 _imgStartedAt = DateTime.Now;
             }
+
             _player.Play(media);
+            media.Dispose();
+
+            // Восстановить громкость после возможного затухания в конце прошлого ролика
+            _player.Volume = (int)VolumeSlider.Value;
 
             if (_previewOnly)
             {
@@ -592,12 +678,12 @@ namespace LedPlayer
             {
                 if (_outputWindow != null)
                 {
-                    using var media2 = new Media(_libVlc, new Uri(item.FullPath));
-                    if (item.IsImage)
-                        media2.AddOption($":image-duration={Math.Max(1, item.ImageSeconds)}");
+                    if (media2 == null) media2 = CreateMediaFor(item);
                     _outPlayer.Play(media2);
+                    media2.Dispose();
                     ShowOutputVideo();
                 }
+                _outPlayer.Volume = _config.OutputSound ? (int)VolumeSlider.Value : 0;
 
                 RecordPlay(item);
                 SetOnAir(true);
@@ -609,8 +695,56 @@ namespace LedPlayer
 
             PlaylistBox.SelectedIndex = _index;
             BtnPlayPause.Content = "❚❚";
+            _curStartedAt = DateTime.Now;
 
             ApplyScaling();
+            PreloadNext();
+        }
+
+        // Предзагрузка следующего разрешённого ролика —
+        // файл открывается и анализируется заранее, переход быстрее
+        private void PreloadNext()
+        {
+            foreach (var m in _mediaGarbage) { try { m.Dispose(); } catch { } }
+            _mediaGarbage.Clear();
+            if (_nextMediaA != null) _mediaGarbage.Add(_nextMediaA);
+            if (_nextMediaB != null) _mediaGarbage.Add(_nextMediaB);
+            _nextMediaA = null;
+            _nextMediaB = null;
+            _nextMediaPath = "";
+
+            if (_playlist.Count == 0) return;
+            var next = FindNextPlayable(_index);
+            if (next < 0) return;
+            var item = _playlist[next];
+            if (item.FileMissing) return;
+
+            try
+            {
+                _nextMediaPath = item.FullPath;
+                _nextMediaA = CreateMediaFor(item);
+                _nextMediaB = CreateMediaFor(item);
+
+                var a = _nextMediaA;
+                var b = _nextMediaB;
+                _ = Task.Run(() =>
+                {
+                    try { a.Parse(MediaParseOptions.ParseLocal, 2000); } catch { }
+                    try { b.Parse(MediaParseOptions.ParseLocal, 2000); } catch { }
+                });
+            }
+            catch { }
+        }
+
+        private void DisposePreloaded()
+        {
+            foreach (var m in _mediaGarbage) { try { m.Dispose(); } catch { } }
+            _mediaGarbage.Clear();
+            if (_nextMediaA != null) _mediaGarbage.Add(_nextMediaA);
+            if (_nextMediaB != null) _mediaGarbage.Add(_nextMediaB);
+            _nextMediaA = null;
+            _nextMediaB = null;
+            _nextMediaPath = "";
         }
 
         private void ShowOutputVideo()
@@ -666,6 +800,11 @@ namespace LedPlayer
         {
             if (_playlist.Count == 0) return;
 
+            // Анти-дубль: только что включили ролик — повторное
+            // событие конца (от прошлого) игнорируем
+            if (_player.IsPlaying && (DateTime.Now - _curStartedAt).TotalMilliseconds < 500)
+                return;
+
             var next = FindNextPlayable(_index);
             if (next < 0)
             {
@@ -685,6 +824,7 @@ namespace LedPlayer
             HideOutputVideo();
             SetOnAir(false);
             BtnPlayPause.Content = "▶";
+            foreach (var it in _playlist) it.IsPlaying = false;
             UpdateIdleState();
             StatusText.Text = "Все ролики заблокированы лимитами — ожидание…";
         }
@@ -769,6 +909,7 @@ namespace LedPlayer
             };
             SavePlSettings();
             UpdateBlockInfos();
+            PreloadNext();
             StatusText.Text =
                 $"«{item.FileName}»: лимит {item.MaxPlaysPerDay}/день, " +
                 $"интервал {item.IntervalMinutes} мин — сохранено";
@@ -815,8 +956,13 @@ namespace LedPlayer
             if (dlg.ShowDialog(this) != true) return;
 
             foreach (var f in dlg.FileNames)
+            {
                 if (!_manualFiles.Contains(f, StringComparer.OrdinalIgnoreCase))
                     _manualFiles.Add(f);
+                // Новые — в конец порядка
+                if (!_manualOrder.Contains(f, StringComparer.OrdinalIgnoreCase))
+                    _manualOrder.Add(f);
+            }
 
             SaveManualList();
             StatusText.Text = $"Добавлено файлов: {dlg.FileNames.Length}";
@@ -844,6 +990,8 @@ namespace LedPlayer
                         _manualFiles.Add(f);
                         added++;
                     }
+                    if (!_manualOrder.Contains(f, StringComparer.OrdinalIgnoreCase))
+                        _manualOrder.Add(f);   // новые — в конец
                 }
             }
             catch (Exception ex)
@@ -877,18 +1025,10 @@ namespace LedPlayer
                 string.Equals(f, sel.FullPath, StringComparison.OrdinalIgnoreCase));
             SaveManualList();
 
-            var inFolder = Directory.Exists(_config.VideoFolder) &&
-                sel.FullPath.StartsWith(_config.VideoFolder, StringComparison.OrdinalIgnoreCase);
-
             _ = ReloadPlaylistAsync().ContinueWith(_ =>
                 Dispatcher.BeginInvoke(() =>
                 {
-                    if (inFolder && _config.PlaylistMode == "folder")
-                        StatusText.Text =
-                            $"«{name}» убран, но файл лежит в папке {_config.VideoFolder} — " +
-                            "в режиме «вся папка» он вернётся";
-                    else
-                        StatusText.Text = $"«{name}» убран из плейлиста";
+                    StatusText.Text = $"«{name}» убран из плейлиста";
 
                     if (idx < _playlist.Count) _index = idx;
                     else if (_playlist.Count > 0) _index = 0;
@@ -897,35 +1037,66 @@ namespace LedPlayer
 
         private void OnMoveUpClick(object sender, RoutedEventArgs e)
         {
-            var sel = PlaylistBox.SelectedItem as PlaylistItem;
-            if (sel == null) { StatusText.Text = "Сначала выберите ролик в списке"; return; }
-            MoveItem(sel, -1);
+            var sel = PlaylistBox.SelectedItems.Cast<PlaylistItem>().ToList();
+            if (sel.Count == 0) { StatusText.Text = "Сначала выберите ролик в списке"; return; }
+            MoveItems(sel, -1);
         }
 
         private void OnMoveDownClick(object sender, RoutedEventArgs e)
         {
-            var sel = PlaylistBox.SelectedItem as PlaylistItem;
-            if (sel == null) { StatusText.Text = "Сначала выберите ролик в списке"; return; }
-            MoveItem(sel, +1);
+            var sel = PlaylistBox.SelectedItems.Cast<PlaylistItem>().ToList();
+            if (sel.Count == 0) { StatusText.Text = "Сначала выберите ролик в списке"; return; }
+            MoveItems(sel, +1);
         }
 
-        private void MoveItem(PlaylistItem sel, int dir)
+        // Перемещение нескольких выделенных роликов (Ctrl/Shift-выделение)
+        private void MoveItems(List<PlaylistItem> sel, int dir)
         {
-            int i = _playlist.IndexOf(sel);
-            int j = i + dir;
-            if (i < 0 || j < 0 || j >= _playlist.Count) return;
+            if (sel.Count == 0) return;
 
-            _playlist.Move(i, j);
+            var playing = _playlist.FirstOrDefault(x => x.IsPlaying);
+
+            if (dir < 0)
+            {
+                // вверх — от верхнего к нижнему
+                foreach (var it in sel.OrderBy(x => _playlist.IndexOf(x)))
+                {
+                    int i = _playlist.IndexOf(it);
+                    if (i <= 0) continue;
+                    _playlist.Move(i, i - 1);
+                }
+            }
+            else
+            {
+                // вниз — от нижнего к верхнему
+                foreach (var it in sel.OrderByDescending(x => _playlist.IndexOf(x)))
+                {
+                    int i = _playlist.IndexOf(it);
+                    if (i >= _playlist.Count - 1) continue;
+                    _playlist.Move(i, i + 1);
+                }
+            }
+
             _manualOrder = _playlist.Select(x => x.FullPath).ToList();
             SaveManualList();
 
             for (int k = 0; k < _playlist.Count; k++) _playlist[k].Number = k + 1;
 
-            if (_index == i) _index = j;
-            else if (_index == j) _index = i;
+            // Восстановить выделение после перестановки
+            PlaylistBox.SelectedItems.Clear();
+            foreach (var it in sel)
+                PlaylistBox.SelectedItems.Add(it);
 
-            PlaylistBox.SelectedIndex = j;
-            StatusText.Text = $"Порядок: «{sel.FileName}» " + (dir < 0 ? "выше" : "ниже");
+            if (playing != null)
+                _index = _playlist.IndexOf(playing);
+            else if (_index >= _playlist.Count)
+                _index = Math.Max(0, _playlist.Count - 1);
+
+            PreloadNext();
+
+            StatusText.Text = sel.Count == 1
+                ? $"Порядок: «{sel[0].FileName}» " + (dir < 0 ? "выше" : "ниже")
+                : $"Перемещено роликов: {sel.Count}";
         }
 
         // Enter/Esc в полях плейлиста
@@ -1319,6 +1490,9 @@ namespace LedPlayer
                 if (_playlist[_index].IsImage) _imgStartedAt = DateTime.Now;
                 _player.Play();
                 if (!_previewOnly) _outPlayer.Play();
+                _player.Volume = (int)VolumeSlider.Value;
+                if (!_previewOnly)
+                    _outPlayer.Volume = _config.OutputSound ? (int)VolumeSlider.Value : 0;
                 BtnPlayPause.Content = "❚❚";
                 if (_previewOnly) SetAirLimit();
                 else SetOnAir(true);
@@ -1341,7 +1515,6 @@ namespace LedPlayer
             }
         }
 
-        // ■ — полная остановка: ролик сбрасывается в начало
         private void OnStopClick(object sender, RoutedEventArgs e)
         {
             if (_playlist.Count == 0) return;
@@ -1356,6 +1529,8 @@ namespace LedPlayer
             HideOutputVideo();
             BtnPlayPause.Content = "▶";
             SetAirIdle();
+
+            foreach (var it in _playlist) it.IsPlaying = false;
 
             VideoView.Visibility = Visibility.Collapsed;
             IdleText.Text = "Готов — ▶ запуск";
@@ -1594,10 +1769,8 @@ namespace LedPlayer
 
             var item = _playlist[_index];
             var startSec = _player.Time / 1000.0;
-            using var media = new Media(_libVlc, new Uri(item.FullPath));
-            if (item.IsImage)
-                media.AddOption($":image-duration={Math.Max(1, item.ImageSeconds)}");
-            else if (startSec > 0.5)
+            using var media = CreateMediaFor(item);
+            if (!item.IsImage && startSec > 0.5)
                 media.AddOption(StartOption(startSec));
             _outPlayer.Play(media);
             ShowOutputVideo();
@@ -1807,7 +1980,7 @@ namespace LedPlayer
             ApplyScaling();
         }
 
-        // ─── Прогресс-бар ──────────────────────────────────
+        // ─── Прогресс-бар + плавные переходы ───────────────
 
         private void StartProgressTimer()
         {
@@ -1821,8 +1994,7 @@ namespace LedPlayer
 
         private void UpdateProgress()
         {
-            if (_playlist.Count == 0 || _index >= _playlist.Count ||
-                (!_player.IsPlaying && _player.Time <= 0))
+            if (_playlist.Count == 0 || _index >= _playlist.Count)
             {
                 PlayBar.Value = 0;
                 return;
@@ -1838,6 +2010,19 @@ namespace LedPlayer
                 if (_player.IsPlaying)
                     elapsed += (DateTime.Now - _imgStartedAt).TotalSeconds;
                 curSec = elapsed;
+
+                // Картинкой управляем сами: VLC по части картинок
+                // не шлёт «EndReached» вовремя — сверяем наши часы
+                if (_player.IsPlaying && curSec >= totalSec)
+                {
+                    if (curSec >= totalSec + 10)
+                    {
+                        // VLC завис на картинке (не заметил конца) — пинаем сами
+                        AdvanceAuto();
+                        return;
+                    }
+                    // ещё не пнули: ждём EndReached ещё до 10 секунд
+                }
             }
             else
             {
@@ -1855,6 +2040,65 @@ namespace LedPlayer
             PlayBar.Value = ratio * 100.0;
             TimeNow.Text = FmtTime(curSec);
             TimeTotal.Text = FmtTime(totalSec);
+
+            HandleFadeAndAdvance(curSec, totalSec);
+        }
+
+        // Затухание звука к концу ролика + ранний старт следующего
+        // Затухание звука к концу видео + ранний старт следующего.
+        // Для картинок — жёсткий запуск по нашим часам: они сами знают,
+        // когда закончиться (VLC часто «засыпает» и шлёт событие с опозданием)
+        private void HandleFadeAndAdvance(double curSec, double totalSec)
+        {
+            if (_waiting) return;
+
+            var item = (_index >= 0 && _index < _playlist.Count) ? _playlist[_index] : null;
+            if (item == null) return;
+
+            if (item.IsImage)
+            {
+                // Картинка: пришло время — запуск следующего немедленно,
+                // не дожидаясь события от VLC
+                if (_player.IsPlaying && curSec >= totalSec)
+                {
+                    var sinceSwitch = (DateTime.Now - _curStartedAt).TotalMilliseconds;
+                    if (sinceSwitch > 700)   // анти-дубль: не чаще раза в 700 мс
+                        Dispatcher.BeginInvoke(AdvanceAuto);
+                }
+                return;
+            }
+
+            var playing = _player.IsPlaying;
+            var vol = (int)VolumeSlider.Value;
+
+            if (playing && totalSec > 1.2)
+            {
+                var remain = totalSec - curSec;
+
+                if (remain < 0.5)
+                {
+                    var k = Math.Max(0, remain / 0.5);
+                    _player.Volume = (int)(vol * k);
+                    if (!_previewOnly)
+                        _outPlayer.Volume = (int)((_config.OutputSound ? vol : 0) * k);
+                }
+                else if (_player.Volume != vol)
+                {
+                    _player.Volume = vol;
+                    if (!_previewOnly)
+                        _outPlayer.Volume = _config.OutputSound ? vol : 0;
+                }
+
+                if (remain <= 0.12)
+                    Dispatcher.BeginInvoke(AdvanceAuto);
+            }
+            else if (!playing && _player.Time > 0)
+            {
+                float pos = 0;
+                try { pos = _player.Position; } catch { }
+                if (pos > 0.99f)
+                    Dispatcher.BeginInvoke(AdvanceAuto);
+            }
         }
 
         private static string FmtTime(double seconds)

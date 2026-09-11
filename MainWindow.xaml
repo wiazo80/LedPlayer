@@ -217,6 +217,7 @@
 
                     <ListBox Grid.Row="1" x:Name="PlaylistBox"
                              Background="Transparent" BorderThickness="0"
+                             SelectionMode="Extended"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              HorizontalContentAlignment="Stretch"
                              MouseDoubleClick="OnPlaylistDoubleClick"
@@ -230,17 +231,24 @@
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBoxItem">
                                             <Border x:Name="Bg" Background="Transparent"
+                                                    BorderBrush="Transparent"
+                                                    BorderThickness="1"
                                                     CornerRadius="6"
                                                     Padding="{TemplateBinding Padding}">
                                                 <ContentPresenter/>
                                             </Border>
                                             <ControlTemplate.Triggers>
-                                                <Trigger Property="IsSelected" Value="True">
-                                                    <Setter TargetName="Bg" Property="Background" Value="#34344E"/>
-                                                </Trigger>
                                                 <Trigger Property="IsMouseOver" Value="True">
                                                     <Setter TargetName="Bg" Property="Background" Value="#2B2B40"/>
                                                 </Trigger>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="Bg" Property="Background" Value="#34344E"/>
+                                                </Trigger>
+                                                <!-- Сейчас играет: яркая зелёная подсветка -->
+                                                <DataTrigger Binding="{Binding IsPlaying}" Value="True">
+                                                    <Setter TargetName="Bg" Property="Background" Value="#1E4A38"/>
+                                                    <Setter TargetName="Bg" Property="BorderBrush" Value="#4CAF7D"/>
+                                                </DataTrigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
                                     </Setter.Value>
@@ -267,6 +275,11 @@
                                                        HorizontalAlignment="Center"/>
                                             <StackPanel Grid.Column="1" Margin="4,0,0,0">
                                                 <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="▶" Foreground="#4CAF7D"
+                                                               FontSize="10" FontWeight="Bold"
+                                                               VerticalAlignment="Center"
+                                                               Margin="0,0,5,0"
+                                                               Visibility="{Binding PlayGlyph}"/>
                                                     <TextBlock Text="{Binding TypeBadge}"
                                                                Foreground="#C090E0" FontSize="11"
                                                                FontWeight="Bold"
@@ -370,7 +383,6 @@
             </Grid>
         </Border>
 
-        <!-- Меню «Окно вывода» -->
         <Popup x:Name="OutputMenu" StaysOpen="False" Placement="Bottom"
                PlacementTarget="{Binding ElementName=BtnOutput}" AllowsTransparency="True">
             <Border Background="#2A2A40" CornerRadius="8" Padding="6"
@@ -379,7 +391,6 @@
             </Border>
         </Popup>
 
-        <!-- Меню «Композиция» -->
         <Popup x:Name="CompositionMenu" StaysOpen="False" Placement="Bottom"
                PlacementTarget="{Binding ElementName=BtnComposition}" AllowsTransparency="True">
             <Border Background="#2A2A40" CornerRadius="8" Padding="6"
